@@ -6,6 +6,10 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
+    "./availability": {
+      "source": "./src/availability.ts",
+      "default": "./src/availability.ts"
+    },
     "./ballistics": {
       "source": "./src/ballistics.ts",
       "default": "./src/ballistics.ts"

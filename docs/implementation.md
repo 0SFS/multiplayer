@@ -9,6 +9,28 @@ The messages, the draw pose, and the integrators for bullets and missiles. A tra
 
 `@0sfs/anti-cheat` judges the same messages. This repository does not import it, so a casual session pays nothing for checks the pilot did not ask for.
 
+## When the code is fetched
+
+`createMultiplayerAvailability` starts disabled. The flight page does not
+statically import this package or `@0sfs/anti-cheat`. It dynamic-imports
+`@0sfs/multiplayer/availability`, whose `enable` dynamic-imports the session.
+
+`osfs.multiplayer` defaults off. `enable` downloads immediately: the pilot
+asked, so a busy pipe or save-data does not wait. `prefetchIfIdle` downloads
+only when all of these hold:
+
+- the feature is still off and a download has not already started
+- `downloading()` is false: no tiles, aircraft bytes, or other transfer
+- the connection is not `saveData` and not `effectiveType` `2g` or `slow-2g`
+
+The prefetch does not turn the feature on and does not open a socket. A
+failed download is forgotten, so the next attempt tries again. `disable`
+stops the feature and leaves a fetched module fetched.
+
+The app calls `prefetchIfIdle` from the settled idle callback, the same
+moment FOSS Earth starts idle prefetch. One attempt per idle. A busy pipe
+simply waits for the next one.
+
 ## Messages
 
 Codec: `encodeMessage` / `parseMessage`. UTF-8, at most 1100 bytes, so a snapshot stays in one packet. A message that fails the parser is dropped. The join secret is a 43-character token on `hello` only. The parser accepts it and nothing in this package writes it to a log.
