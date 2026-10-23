@@ -1,0 +1,38 @@
+{
+  "name": "@0sfs/multiplayer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "0SFS multiplayer session: aircraft poses, bullet bursts and missile guidance, with no socket of its own.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    "./ballistics": {
+      "source": "./src/ballistics.ts",
+      "default": "./src/ballistics.ts"
+    },
+    "./geodetic": {
+      "source": "./src/geodetic.ts",
+      "default": "./src/geodetic.ts"
+    },
+    "./guidance": {
+      "source": "./src/guidance.ts",
+      "default": "./src/guidance.ts"
+    },
+    "./posePlayout": {
+      "source": "./src/posePlayout.ts",
+      "default": "./src/posePlayout.ts"
+    },
+    "./protocol": {
+      "source": "./src/protocol.ts",
+      "default": "./src/protocol.ts"
+    },
+    "./sessionWorld": {
+      "source": "./src/sessionWorld.ts",
+      "default": "./src/sessionWorld.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "devDependencies": {
+    "vitest": "4.1.6"
+  }
+}
