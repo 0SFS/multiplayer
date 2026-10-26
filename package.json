@@ -2,7 +2,7 @@
   "name": "@0sfs/multiplayer",
   "version": "0.1.0",
   "private": true,
-  "description": "0SFS multiplayer session: aircraft poses, bullet bursts and missile guidance, with no socket of its own.",
+  "description": "0SFS multiplayer world and optional serverless browser session: aircraft poses, bullet bursts and missile guidance.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
@@ -34,9 +34,24 @@
       "source": "./src/sessionWorld.ts",
       "default": "./src/sessionWorld.ts"
     },
-    "./package.json": "./package.json"
+    "./sharedSettings": {
+      "source": "./src/sharedSettings.ts",
+      "default": "./src/sharedSettings.ts"
+    },
+    "./package.json": "./package.json",
+    "./serverlessSession": {
+      "source": "./src/serverlessSession.ts",
+      "default": "./src/serverlessSession.ts"
+    },
+    "./invitation": {
+      "source": "./src/invitation.ts",
+      "default": "./src/invitation.ts"
+    }
   },
   "devDependencies": {
     "vitest": "4.1.6"
+  },
+  "peerDependencies": {
+    "@0sfs/rc": "0.1.0"
   }
 }

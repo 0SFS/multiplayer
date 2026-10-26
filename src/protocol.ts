@@ -7,8 +7,10 @@
  */
 
 import type { Geodetic } from "./geodetic";
+import { isDamageCapabilities, isDamageImplementation, isSharedSettings, isSharedSettingsPatch,
+  type DamageImplementation, type SharedFlightSettings, type SharedSettingsPatch, type SharedSettingsRejection } from "./sharedSettings";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MAX_MESSAGE_BYTES = 1100;
 /** Feet per second on a pose, to meters per second. */
 export const FT_TO_M = 0.3048;
@@ -53,6 +55,11 @@ export interface AircraftPose extends Geodetic {
   afterburner: boolean;
   /** F-35B nozzle, 0 stowed to 1 full. Absent on aircraft that have none. */
   nozzleNorm?: number;
+  /** Optional whole-aircraft health, 0–100. Missing means this peer does not report health. */
+  health?: number;
+  /** Required by serverless v2 sessions; optional for standalone world fixtures. */
+  damageImplementation?: DamageImplementation;
+  sharedSettingsRevision?: number;
 }
 
 export interface FireBurst extends Geodetic {
@@ -103,12 +110,17 @@ export interface WorldSettings {
 }
 
 export type SessionMessage =
-  | { type: "hello"; v: number; pilotId: string; secret: string; aircraftId: string }
+  | { type: "hello"; v: number; pilotId: string; secret: string; aircraftId: string; damageImplementations: readonly DamageImplementation[] }
   | { type: "pose"; pose: AircraftPose }
   | { type: "held"; pilotId: string; tMs: number }
   | { type: "fire"; burst: FireBurst }
   | { type: "launch"; launch: MissileLaunch }
-  | { type: "world"; world: WorldSettings };
+  | { type: "world"; world: WorldSettings }
+  | { type: "shared-settings"; revision: number; settings: SharedFlightSettings }
+  | { type: "shared-settings-ack"; revision: number }
+  | { type: "shared-settings-ready"; revision: number }
+  | { type: "shared-settings-request"; requestId: number; baseRevision: number; patch: SharedSettingsPatch }
+  | { type: "shared-settings-result"; requestId: number; error: SharedSettingsRejection | null };
 
 export function groundSpeedMps(pose: Pick<AircraftPose, "northVelocityFps" | "eastVelocityFps" | "verticalSpeedFps">): number {
   return Math.hypot(pose.northVelocityFps, pose.eastVelocityFps, pose.verticalSpeedFps) * FT_TO_M;
@@ -137,6 +149,15 @@ export function parseMessage(json: string): SessionMessage | null {
     case "fire": return isBurst(value.burst) ? { type: "fire", burst: value.burst } : null;
     case "launch": return isLaunch(value.launch) ? { type: "launch", launch: value.launch } : null;
     case "world": return isWorld(value.world) ? { type: "world", world: value.world } : null;
+    case "shared-settings": return isCounter(value.revision) && isSharedSettings(value.settings)
+      ? { type: "shared-settings", revision: value.revision, settings: value.settings } : null;
+    case "shared-settings-ack":
+    case "shared-settings-ready": return isCounter(value.revision) ? { type: value.type, revision: value.revision } : null;
+    case "shared-settings-request": return isCounter(value.requestId) && isCounter(value.baseRevision) && isSharedSettingsPatch(value.patch)
+      ? { type: "shared-settings-request", requestId: value.requestId, baseRevision: value.baseRevision, patch: value.patch } : null;
+    case "shared-settings-result": return isCounter(value.requestId)
+      && [null, "host-only", "permission-host-only", "stale", "unsupported", "not-ready"].includes(value.error as SharedSettingsRejection | null)
+      ? { type: "shared-settings-result", requestId: value.requestId, error: value.error as SharedSettingsRejection | null } : null;
     default: return null;
   }
 }
@@ -144,7 +165,9 @@ export function parseMessage(json: string): SessionMessage | null {
 function parseHello(value: Record<string, unknown>): SessionMessage | null {
   if (value.v !== PROTOCOL_VERSION || !isPilot(value.pilotId) || !isAircraft(value.aircraftId)) return null;
   if (typeof value.secret !== "string" || !JOIN_SECRET.test(value.secret)) return null;
-  return { type: "hello", v: PROTOCOL_VERSION, pilotId: value.pilotId, secret: value.secret, aircraftId: value.aircraftId };
+  if (!isDamageCapabilities(value.damageImplementations)) return null;
+  return { type: "hello", v: PROTOCOL_VERSION, pilotId: value.pilotId, secret: value.secret, aircraftId: value.aircraftId,
+    damageImplementations: [...value.damageImplementations] };
 }
 
 export function isPose(value: unknown): value is AircraftPose {
@@ -156,6 +179,9 @@ export function isPose(value: unknown): value is AircraftPose {
   if (!finiteIn(value.throttleNorm, 0, 1) || !finiteIn(value.flapsNorm, 0, 1) || typeof value.gearDown !== "boolean") return false;
   if (typeof value.afterburner !== "boolean") return false;
   if (value.nozzleNorm !== undefined && !finiteIn(value.nozzleNorm, 0, 1)) return false;
+  if (value.health !== undefined && !finiteIn(value.health, 0, 100)) return false;
+  if (value.damageImplementation !== undefined && !isDamageImplementation(value.damageImplementation)) return false;
+  if (value.sharedSettingsRevision !== undefined && !isCounter(value.sharedSettingsRevision)) return false;
   return Math.abs(value.latDeg as number) <= 90;
 }
 
