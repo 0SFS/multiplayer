@@ -2,7 +2,7 @@
 
 The session that shows one pilot the others' aircraft, bullets and missiles.
 
-A plane arrives as a pose. A bullet arrives as a burst, and a missile as a launch. The transport-free world integrates those events. The optional `serverlessSession` entry connects two browsers over PeerJS and direct WebRTC. It uses invitation authentication and bounded message parsing; server hosting and anti-cheat are deferred.
+A plane arrives as a pose. A bullet arrives as a burst, and a missile as a launch. The transport-free world integrates those events. `serverlessSession` connects two browsers over PeerJS and direct WebRTC. `serverSession` connects each browser to a flight server over WebTransport. Run that server from the [multiplayer-server](https://github.com/0SFS/multiplayer-server) repository. The relay checks membership and message bounds; `@0sfs/anti-cheat` is what decides a pose may be relayed.
 
 The implementation spec is [docs/implementation.md](docs/implementation.md). The flight-wide design is [0SFS/docs](https://github.com/0SFS/docs/blob/main/docs/proposals/multiplayer.md).
 

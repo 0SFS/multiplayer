@@ -5,8 +5,8 @@
  * bursts and launches on the shared step, and returns what to draw.
  */
 
-import { BALLISTIC_STEP_S, roundGeodetic, roundsFromBurst, stepRound, type RoundState } from "./ballistics";
-import { missileFromLaunch, stepMissile, type TargetSample } from "./guidance";
+import { BALLISTIC_STEP_S, roundGeodetic, roundsFromBurst, stepRoundInPlace, type RoundState } from "./ballistics";
+import { missileFromLaunch, stepMissileInPlace, type TargetSample } from "./guidance";
 import { showPose, type ShownPose } from "./posePlayout";
 import {
   FT_TO_M, PROTOCOL_LIMITS, type AircraftPose, type FireBurst, type MissileLaunch, type MissileState,
@@ -16,9 +16,13 @@ import {
 export interface DrawnRound {
   id: string;
   shooterId: string;
+  seq: number;
   latDeg: number;
   lonDeg: number;
   altMeters: number;
+  northMps: number;
+  eastMps: number;
+  upMps: number;
 }
 
 export interface SessionView {
@@ -39,11 +43,17 @@ interface LiveRound {
   steppedToMs: number;
 }
 
+interface MissileCheckpoint {
+  tMs: number;
+  state: MissileState;
+}
+
 interface LiveMissile {
   state: MissileState;
   steppedToMs: number;
-  /** Newest target sequence the integral was built from. A newer pose rebuilds it. */
+  /** Newest target sequence the integral was built from. A newer pose rebuilds from the last checkpoint. */
   guidedOnSeq: number;
+  checkpoints: MissileCheckpoint[];
 }
 
 export function createSessionWorld() {
@@ -119,10 +129,12 @@ export function createSessionWorld() {
       const oldest = owned.reduce((best, item) => item.state.launch.seq < best.state.launch.seq ? item : best);
       missiles.delete(oldest.state.launch.missileId);
     }
+    const state = missileFromLaunch(launch);
     missiles.set(launch.missileId, {
-      state: missileFromLaunch(launch),
+      state,
       steppedToMs: launch.tMs,
       guidedOnSeq: guideSeq(launch.targetId),
+      checkpoints: [{ tMs: launch.tMs, state: { ...state } }],
     });
   }
 
@@ -156,12 +168,32 @@ export function createSessionWorld() {
     };
   }
 
+  function copyMissile(state: MissileState): MissileState {
+    return { ...state, launch: state.launch };
+  }
+
+  function rewindMissile(live: LiveMissile, poseTime: number): void {
+    let resume = -1;
+    for (let i = live.checkpoints.length - 1; i >= 0; i--) {
+      if (live.checkpoints[i].tMs <= poseTime) { resume = i; break; }
+    }
+    if (resume >= 0) {
+      live.state = copyMissile(live.checkpoints[resume].state);
+      live.steppedToMs = live.checkpoints[resume].tMs;
+      live.checkpoints.length = resume + 1;
+      return;
+    }
+    live.state = missileFromLaunch(live.state.launch);
+    live.steppedToMs = live.state.launch.tMs;
+    live.checkpoints.length = 0;
+  }
+
   function advance(nowMs: number): void {
     const stepMs = BALLISTIC_STEP_S * 1000;
     const finished: string[] = [];
     for (const [id, live] of rounds) {
       while (live.steppedToMs + stepMs <= nowMs && !live.state.done) {
-        live.state = stepRound(live.state, BALLISTIC_STEP_S);
+        stepRoundInPlace(live.state, BALLISTIC_STEP_S);
         live.steppedToMs += stepMs;
       }
       if (live.state.done) finished.push(id);
@@ -170,13 +202,20 @@ export function createSessionWorld() {
     for (const live of missiles.values()) {
       const seq = guideSeq(live.state.launch.targetId);
       if (seq !== live.guidedOnSeq) {
-        live.state = missileFromLaunch(live.state.launch);
-        live.steppedToMs = live.state.launch.tMs;
+        // A pose that arrives after we have stepped past it changes the integral.
+        // Replay from the last checkpoint at or before that pose, not from the rail.
+        const poseTime = live.state.launch.targetId ? pilots.get(live.state.launch.targetId)?.pose.tMs ?? live.state.launch.tMs : live.state.launch.tMs;
+        rewindMissile(live, poseTime);
         live.guidedOnSeq = seq;
       }
       while (live.steppedToMs + stepMs <= nowMs && !live.state.flown) {
-        live.state = stepMissile(live.state, targetAt(live.state.launch.targetId, live.steppedToMs), BALLISTIC_STEP_S);
+        stepMissileInPlace(live.state, targetAt(live.state.launch.targetId, live.steppedToMs), BALLISTIC_STEP_S);
         live.steppedToMs += stepMs;
+        const previous = live.checkpoints[live.checkpoints.length - 1];
+        if (!previous || live.steppedToMs - previous.tMs >= 250) {
+          live.checkpoints.push({ tMs: live.steppedToMs, state: copyMissile(live.state) });
+          if (live.checkpoints.length > 160) live.checkpoints.shift();
+        }
       }
     }
   }
@@ -188,7 +227,10 @@ export function createSessionWorld() {
     for (const live of rounds.values()) {
       if (live.state.done || nowMs < live.state.birthMs) continue;
       const place = roundGeodetic(live.state);
-      drawn.push({ id: live.state.id, shooterId: live.state.shooterId, ...place });
+      drawn.push({
+        id: live.state.id, shooterId: live.state.shooterId, seq: live.state.seq, ...place,
+        northMps: live.state.northMps, eastMps: live.state.eastMps, upMps: live.state.upMps,
+      });
     }
     return {
       aircraft,
@@ -198,7 +240,26 @@ export function createSessionWorld() {
     };
   }
 
-  return { ingest, render };
+  function forget(pilotId: string): void {
+    pilots.delete(pilotId);
+  }
+
+  function dismiss(id: string): void {
+    rounds.delete(id);
+    missiles.delete(id);
+  }
+
+  function clearShots(): void {
+    bursts.clear();
+    rounds.clear();
+    missiles.clear();
+  }
+
+  function latestPoses(): { pose: AircraftPose; held: boolean }[] {
+    return [...pilots.values()].map(slot => ({ pose: slot.pose, held: slot.held }));
+  }
+
+  return { ingest, render, forget, dismiss, clearShots, latestPoses };
 }
 
 export type SessionWorld = ReturnType<typeof createSessionWorld>;

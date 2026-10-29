@@ -33,11 +33,14 @@ export function missileFromLaunch(launch: MissileLaunch): MissileState {
   };
 }
 
-export function stepMissile(state: MissileState, target: TargetSample | null, dtS: number): MissileState {
-  if (state.flown || !(dtS > 0)) return state;
+/** Same step as `stepMissile`, without a new object. The launch record is not mutated. */
+export function stepMissileInPlace(state: MissileState, target: TargetSample | null, dtS: number): void {
+  if (state.flown || !(dtS > 0)) return;
   const tMs = state.tMs + dtS * 1000;
   if ((tMs - state.launch.tMs) / 1000 > state.launch.lifeS) {
-    return { ...state, tMs, flown: true };
+    state.tMs = tMs;
+    state.flown = true;
+    return;
   }
   let northMps = state.northMps;
   let eastMps = state.eastMps;
@@ -85,5 +88,19 @@ export function stepMissile(state: MissileState, target: TargetSample | null, dt
     upMps = 0;
   }
   const moved = geodeticFrom(state, { northM: northMps * dtS, eastM: eastMps * dtS, downM: -upMps * dtS });
-  return { ...state, ...moved, northMps, eastMps, upMps, tMs, flown: false };
+  state.latDeg = moved.latDeg;
+  state.lonDeg = moved.lonDeg;
+  state.altMeters = moved.altMeters;
+  state.northMps = northMps;
+  state.eastMps = eastMps;
+  state.upMps = upMps;
+  state.tMs = tMs;
+  state.flown = false;
+}
+
+export function stepMissile(state: MissileState, target: TargetSample | null, dtS: number): MissileState {
+  if (state.flown || !(dtS > 0)) return state;
+  const next = { ...state };
+  stepMissileInPlace(next, target, dtS);
+  return next;
 }

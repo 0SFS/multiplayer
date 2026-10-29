@@ -1,6 +1,6 @@
 import { createPeerEndpoint, type PeerEndpoint, type SessionTransport, type TransportDiagnostics } from "@0sfs/rc/peerTransport";
 import { invitationUrl, randomToken, readInvitation, INVITATION_LIFETIME_MS, type Invitation } from "./invitation";
-import { encodeMessage, parseMessage, PROTOCOL_VERSION, type AircraftPose, type SessionMessage } from "./protocol";
+import { encodeMessage, parseMessage, PROTOCOL_VERSION, type AircraftPose, type CombatMessage, type SessionMessage } from "./protocol";
 import { createSessionWorld } from "./sessionWorld";
 import { DAMAGE_IMPLEMENTATIONS, DEFAULT_SHARED_SETTINGS, isDamageCapabilities, isSharedSettings, isSharedSettingsPatch,
   type DamageImplementation, type SharedFlightSettings, type SharedSettingsPatch, type SharedSettingsRejection } from "./sharedSettings";
@@ -30,6 +30,7 @@ export function createServerlessSession(options: {
   onChange?(): void;
   onPose?(): void;
   onSpawn?(pose: AircraftPose): void;
+  onCombat?(message: CombatMessage): void;
   createEndpoint?: typeof createPeerEndpoint;
   now?: () => number;
   initialSharedSettings?: SharedFlightSettings;
@@ -262,6 +263,7 @@ export function createServerlessSession(options: {
       }
       if (message?.type === "pose") { acceptPose(message); return; }
       if (message?.type === "held" && message.pilotId === remoteId) { world.ingest(message); options.onPose?.(); return; }
+      if (message && isRemoteCombat(message, remoteId)) { options.onCombat?.(message); options.onPose?.(); return; }
       link.fail("invalid-session-message", "Invalid multiplayer session message.");
     });
     link.onNative(value => {
@@ -357,6 +359,13 @@ export function createServerlessSession(options: {
           .catch(() => {}).finally(() => { if (epoch === generation) diagnosticsPending = false; });
       }
     },
+    publishCombat(message: CombatMessage) {
+      if (!active || state.status !== "connected" || !state.sharedSettingsReady) return false;
+      return send(active, message);
+    },
+    nowMs() { return now() + clockOffset; },
+    selfId() { return pilotId; },
+    remotePoses() { return world.latestPoses(); },
     render() {
       const view = world.render(now() + clockOffset);
       const shown = view.aircraft[0];
@@ -364,11 +373,25 @@ export function createServerlessSession(options: {
       state.receiveToPresentMs = lastReceived === null ? null : Math.max(0, now() - lastReceived);
       return view;
     },
+    replaceIdleSettings(settings: SharedFlightSettings) {
+      if (disposed) throw new Error("Multiplayer has closed.");
+      if (state.status !== "idle" && state.status !== "error") throw new Error("Disconnect before replacing shared settings.");
+      if (!isSharedSettings(settings) || !supported.includes(settings.damageImplementation)) throw new Error("Unsupported shared settings.");
+      change({ status: "idle", role: null, message: "Multiplayer is off.", invitationUrl: null, invitationExpiresAtMs: null,
+        sharedSettings: { ...settings }, sharedSettingsRevision: 0, sharedSettingsReady: true, sharedSettingsPending: false, sharedSettingsError: null });
+    },
     snapshot: () => ({ ...state, sharedSettings: { ...state.sharedSettings } }),
     disconnect,
     dispose() { disconnect(); disposed = true; },
   };
 }
+function isRemoteCombat(message: SessionMessage, remoteId: string): message is CombatMessage {
+  if (message.type === "fire") return message.burst.shooterId === remoteId;
+  if (message.type === "launch") return message.launch.shooterId === remoteId;
+  if (message.type === "hit") return message.hit.shooterId === remoteId;
+  return false;
+}
+
 function rejectionMessage(reason: SharedSettingsRejection): string {
   switch (reason) {
     case "host-only": return "Only the host can change shared settings.";

@@ -1,11 +1,11 @@
 # Multiplayer implementation
 
-Status: **two-pilot browser session implemented locally; physical-device acceptance pending**
-Date: 2026-10-24
+Status: **direct two-pilot session and flight-server relay implemented locally; physical-device acceptance pending**
+Date: 2026-10-27
 
 ## What this repository owns
 
-The messages, the draw pose, the integrators for bullets and missiles, and the optional two-pilot serverless session. `createSessionWorld` remains transport-free. `createServerlessSession` feeds it aircraft messages from a direct link; `fly` owns the Multiplayer tab and remote aircraft renderer.
+The messages, the draw pose, the integrators for bullets and missiles, the optional two-pilot serverless session, and the flight-server relay. `createSessionWorld` remains transport-free. `createServerlessSession` feeds it aircraft messages from a direct link. `createServerSession` feeds it messages from one WebTransport connection. `fly` owns the Multiplayer tab and remote aircraft renderer. The relay does not import `@0sfs/anti-cheat`; the `@0sfs/multiplayer-server` process passes that envelope in.
 
 `@0sfs/anti-cheat` judges the same messages. This repository does not import it, so a casual session pays nothing for checks the pilot did not ask for.
 
@@ -183,7 +183,11 @@ The world rebuilds a missile's integral when the target publishes a newer pose, 
 3. Remote engine effects and optional push-to-talk on a separate media call.
 4. Weapon event publishing and rendering when fire control is available.
 
-Server hosting, WebTransport, hybrid mode and anti-cheat are deferred by the
-current scope. Their existing library code and design remain available for later work.
+The flight server admits up to 16 pilots. The host opens it with `open-flight`;
+guests present the server-issued secret. Poses move as datagrams and are
+admitted before fan-out. A rejected pose is not relayed. The third failure
+removes that pilot. The host's departure promotes the next pilot and mints a
+new invitation. Shared settings still publish from the host and wait until
+every guest confirms. Hybrid mode remains deferred.
 
 Hits rewind the accepted pose log to the firing time. That lands with the F-35B's stores. The pose already carries `seq` and `tMs`.

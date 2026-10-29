@@ -47,8 +47,22 @@ describe("session messages", () => {
       { type: "shared-settings-request", requestId: 1, baseRevision: 0, patch: { unknown: true } },
       { type: "shared-settings-ready", revision: 0.5 },
       { type: "shared-settings-result", requestId: 1, error: "arbitrary error" },
+      { type: "hello", v: PROTOCOL_VERSION, pilotId: "a", secret, aircraftId: "f-35b", sessionId: "short" },
       { type: "hello", v: PROTOCOL_VERSION, pilotId: "a", secret, aircraftId: "f-35b" },
       { type: "hello", v: 1, pilotId: "a", secret, aircraftId: "f-35b", damageImplementations: ["health-v1"] },
     ]) expect(parseMessage(JSON.stringify(message))).toBeNull();
+  });
+
+  it("round-trips flight-server membership messages and keeps the join secret off a guest welcome", () => {
+    const settings = { damageImplementation: "health-v1" as const, settingsEditors: "host" as const };
+    const sessionId = "a".repeat(22);
+    for (const message of [
+      { type: "open-flight" as const, v: PROTOCOL_VERSION, pilotId: "host", aircraftId: "f-35b", damageImplementations: ["health-v1"] as const, settings },
+      { type: "welcome" as const, role: "host" as const, sessionId, secret, expiresAtMs: 10, serverTimeMs: 1, revision: 0, settings },
+      { type: "welcome" as const, role: "guest" as const, sessionId, expiresAtMs: 10, serverTimeMs: 1, revision: 0, settings },
+      { type: "member" as const, pilotId: "host", aircraftId: "f-35b", host: true, present: true },
+      { type: "removed" as const, pilotId: "guest", reason: "strikes" as const },
+    ]) expect(parseMessage(encodeMessage(message)!)).toEqual(message);
+    expect(parseMessage(JSON.stringify({ type: "welcome", role: "guest", sessionId, secret, expiresAtMs: 10, serverTimeMs: 1, revision: 0, settings }))).toBeNull();
   });
 });

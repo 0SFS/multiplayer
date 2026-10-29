@@ -39,6 +39,18 @@
       "default": "./src/sharedSettings.ts"
     },
     "./package.json": "./package.json",
+    "./serverFrames": {
+      "source": "./src/serverFrames.ts",
+      "default": "./src/serverFrames.ts"
+    },
+    "./serverRelay": {
+      "source": "./src/serverRelay.ts",
+      "default": "./src/serverRelay.ts"
+    },
+    "./serverSession": {
+      "source": "./src/serverSession.ts",
+      "default": "./src/serverSession.ts"
+    },
     "./serverlessSession": {
       "source": "./src/serverlessSession.ts",
       "default": "./src/serverlessSession.ts"

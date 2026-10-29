@@ -32,7 +32,11 @@ export const PROTOCOL_LIMITS = {
 const encoder = new TextEncoder();
 const PILOT_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const JOIN_SECRET = /^[A-Za-z0-9_-]{43}$/;
+const SESSION_ID = /^[A-Za-z0-9_-]{16,32}$/;
+const REPORT_CODE = /^[a-z0-9-]{1,32}$/;
 const WEATHER_ID = /^[a-z0-9-]{1,32}$/;
+/** Authenticated pilots on one flight server, including the host. */
+export const SERVER_CAPACITY = 16;
 
 export interface AircraftPose extends Geodetic {
   pilotId: string;
@@ -74,6 +78,12 @@ export interface FireBurst extends Geodetic {
   /** Quadratic drag, 1/m. Zero is a vacuum arc. */
   dragPerSec: number;
   lifeS: number;
+  /**
+   * 80% cone radius about the burst velocity, radians. Both peers derive the
+   * same per-round offsets from `coneSeed`, so the wire still carries one velocity.
+   */
+  coneRad?: number;
+  coneSeed?: number;
 }
 
 export interface MissileLaunch extends Geodetic {
@@ -90,6 +100,17 @@ export interface MissileLaunch extends Geodetic {
   maxTurnRadPerSec: number;
   speedMps: number;
   lifeS: number;
+}
+
+/** One accepted hit. The shooter decides it; the target applies it once. */
+export interface WeaponHit {
+  hitId: string;
+  shooterId: string;
+  targetId: string;
+  seq: number;
+  tMs: number;
+  /** Whole-aircraft health points, 1–100. */
+  points: number;
 }
 
 export interface MissileState {
@@ -109,12 +130,24 @@ export interface WorldSettings {
   weatherId: string;
 }
 
+export type RemovalReason = "strikes" | "left" | "authority" | "timeout";
+
 export type SessionMessage =
-  | { type: "hello"; v: number; pilotId: string; secret: string; aircraftId: string; damageImplementations: readonly DamageImplementation[] }
+  | { type: "hello"; v: number; pilotId: string; secret: string; aircraftId: string; damageImplementations: readonly DamageImplementation[]; sessionId?: string }
+  | { type: "open-flight"; v: number; pilotId: string; aircraftId: string; damageImplementations: readonly DamageImplementation[]; settings: SharedFlightSettings }
+  | { type: "welcome"; role: "host" | "guest"; sessionId: string; secret?: string; expiresAtMs: number; serverTimeMs: number; revision: number; settings: SharedFlightSettings }
+  | { type: "member"; pilotId: string; aircraftId: string; host: boolean; present: boolean }
+  | { type: "invitation"; secret: string; expiresAtMs: number }
+  | { type: "renew" }
+  | { type: "clock-ping"; t: number }
+  | { type: "clock-pong"; t: number; server: number }
+  | { type: "reject"; code: string; seq: number }
+  | { type: "removed"; pilotId: string; reason: RemovalReason }
   | { type: "pose"; pose: AircraftPose }
   | { type: "held"; pilotId: string; tMs: number }
   | { type: "fire"; burst: FireBurst }
   | { type: "launch"; launch: MissileLaunch }
+  | { type: "hit"; hit: WeaponHit }
   | { type: "world"; world: WorldSettings }
   | { type: "shared-settings"; revision: number; settings: SharedFlightSettings }
   | { type: "shared-settings-ack"; revision: number }
@@ -122,12 +155,26 @@ export type SessionMessage =
   | { type: "shared-settings-request"; requestId: number; baseRevision: number; patch: SharedSettingsPatch }
   | { type: "shared-settings-result"; requestId: number; error: SharedSettingsRejection | null };
 
+export type CombatMessage = Extract<SessionMessage, { type: "fire" | "launch" | "hit" }>;
+
 export function groundSpeedMps(pose: Pick<AircraftPose, "northVelocityFps" | "eastVelocityFps" | "verticalSpeedFps">): number {
   return Math.hypot(pose.northVelocityFps, pose.eastVelocityFps, pose.verticalSpeedFps) * FT_TO_M;
 }
 
 export function muzzleSpeedMps(body: Pick<FireBurst, "northMps" | "eastMps" | "upMps">): number {
   return Math.hypot(body.northMps, body.eastMps, body.upMps);
+}
+
+/** Muzzle velocity relative to the shooter. An airborne gun adds the aircraft's ground speed. */
+export function relativeMuzzleMps(
+  burst: Pick<FireBurst, "northMps" | "eastMps" | "upMps">,
+  shooter: Pick<AircraftPose, "northVelocityFps" | "eastVelocityFps" | "verticalSpeedFps">,
+): number {
+  return Math.hypot(
+    burst.northMps - shooter.northVelocityFps * FT_TO_M,
+    burst.eastMps - shooter.eastVelocityFps * FT_TO_M,
+    burst.upMps - shooter.verticalSpeedFps * FT_TO_M,
+  );
 }
 
 export function encodeMessage(message: SessionMessage): string | null {
@@ -144,10 +191,21 @@ export function parseMessage(json: string): SessionMessage | null {
   if (!record(value) || typeof value.type !== "string") return null;
   switch (value.type) {
     case "hello": return parseHello(value);
+    case "open-flight": return parseOpenFlight(value);
+    case "welcome": return parseWelcome(value);
+    case "member": return isPilot(value.pilotId) && isAircraft(value.aircraftId) && typeof value.host === "boolean" && typeof value.present === "boolean"
+      ? { type: "member", pilotId: value.pilotId, aircraftId: value.aircraftId, host: value.host, present: value.present } : null;
+    case "invitation": return isSecret(value.secret) && isTime(value.expiresAtMs) ? { type: "invitation", secret: value.secret, expiresAtMs: value.expiresAtMs } : null;
+    case "renew": return { type: "renew" };
+    case "clock-ping": return isTime(value.t) ? { type: "clock-ping", t: value.t } : null;
+    case "clock-pong": return isTime(value.t) && isTime(value.server) ? { type: "clock-pong", t: value.t, server: value.server } : null;
+    case "reject": return typeof value.code === "string" && REPORT_CODE.test(value.code) && isCounter(value.seq) ? { type: "reject", code: value.code, seq: value.seq } : null;
+    case "removed": return isPilot(value.pilotId) && isRemoval(value.reason) ? { type: "removed", pilotId: value.pilotId, reason: value.reason } : null;
     case "pose": return isPose(value.pose) ? { type: "pose", pose: value.pose } : null;
     case "held": return isPilot(value.pilotId) && isTime(value.tMs) ? { type: "held", pilotId: value.pilotId, tMs: value.tMs } : null;
     case "fire": return isBurst(value.burst) ? { type: "fire", burst: value.burst } : null;
     case "launch": return isLaunch(value.launch) ? { type: "launch", launch: value.launch } : null;
+    case "hit": return isHit(value.hit) ? { type: "hit", hit: value.hit } : null;
     case "world": return isWorld(value.world) ? { type: "world", world: value.world } : null;
     case "shared-settings": return isCounter(value.revision) && isSharedSettings(value.settings)
       ? { type: "shared-settings", revision: value.revision, settings: value.settings } : null;
@@ -166,8 +224,26 @@ function parseHello(value: Record<string, unknown>): SessionMessage | null {
   if (value.v !== PROTOCOL_VERSION || !isPilot(value.pilotId) || !isAircraft(value.aircraftId)) return null;
   if (typeof value.secret !== "string" || !JOIN_SECRET.test(value.secret)) return null;
   if (!isDamageCapabilities(value.damageImplementations)) return null;
+  if (value.sessionId !== undefined && !isSession(value.sessionId)) return null;
   return { type: "hello", v: PROTOCOL_VERSION, pilotId: value.pilotId, secret: value.secret, aircraftId: value.aircraftId,
-    damageImplementations: [...value.damageImplementations] };
+    damageImplementations: [...value.damageImplementations], ...(isSession(value.sessionId) ? { sessionId: value.sessionId } : {}) };
+}
+
+function parseOpenFlight(value: Record<string, unknown>): SessionMessage | null {
+  if (value.v !== PROTOCOL_VERSION || !isPilot(value.pilotId) || !isAircraft(value.aircraftId)) return null;
+  if (!isDamageCapabilities(value.damageImplementations) || !isSharedSettings(value.settings)) return null;
+  if (!value.damageImplementations.includes(value.settings.damageImplementation)) return null;
+  return { type: "open-flight", v: PROTOCOL_VERSION, pilotId: value.pilotId, aircraftId: value.aircraftId,
+    damageImplementations: [...value.damageImplementations], settings: { ...value.settings } };
+}
+
+function parseWelcome(value: Record<string, unknown>): SessionMessage | null {
+  if ((value.role !== "host" && value.role !== "guest") || !isSession(value.sessionId)) return null;
+  if (!isTime(value.expiresAtMs) || !isTime(value.serverTimeMs) || !isCounter(value.revision) || !isSharedSettings(value.settings)) return null;
+  if (value.role === "guest" && value.secret !== undefined) return null;
+  if (value.role === "host" && !isSecret(value.secret)) return null;
+  return { type: "welcome", role: value.role, sessionId: value.sessionId, expiresAtMs: value.expiresAtMs, serverTimeMs: value.serverTimeMs,
+    revision: value.revision, settings: { ...value.settings }, ...(value.role === "host" && isSecret(value.secret) ? { secret: value.secret } : {}) };
 }
 
 export function isPose(value: unknown): value is AircraftPose {
@@ -192,8 +268,17 @@ export function isBurst(value: unknown): value is FireBurst {
   if (!finiteIn(value.rateHz, 1, PROTOCOL_LIMITS.maxRateHz)) return false;
   if (!finiteIn(value.dragPerSec, 0, PROTOCOL_LIMITS.maxDragPerSec)) return false;
   if (!finiteIn(value.lifeS, 0.05, PROTOCOL_LIMITS.maxBulletLifeS)) return false;
+  if (value.coneRad !== undefined && !finiteIn(value.coneRad, 0, 0.02)) return false;
+  if (value.coneSeed !== undefined && !isCounter(value.coneSeed)) return false;
   if (!["northMps", "eastMps", "upMps"].every(key => finiteIn(value[key], -PROTOCOL_LIMITS.maxMuzzleMps, PROTOCOL_LIMITS.maxMuzzleMps))) return false;
   return Math.hypot(value.northMps as number, value.eastMps as number, value.upMps as number) <= PROTOCOL_LIMITS.maxMuzzleMps;
+}
+
+export function isHit(value: unknown): value is WeaponHit {
+  if (!record(value)) return false;
+  if (!isPilot(value.hitId) || !isPilot(value.shooterId) || !isPilot(value.targetId)) return false;
+  if (!isCounter(value.seq) || !isTime(value.tMs)) return false;
+  return integerIn(value.points, 1, 100);
 }
 
 export function isLaunch(value: unknown): value is MissileLaunch {
@@ -215,6 +300,18 @@ function isWorld(value: unknown): value is WorldSettings {
 
 function isGeodetic(value: Record<string, unknown>): boolean {
   return finiteIn(value.latDeg, -90, 90) && finiteIn(value.lonDeg, -180, 180) && finiteIn(value.altMeters, -500, 100_000);
+}
+
+function isRemoval(value: unknown): value is RemovalReason {
+  return value === "strikes" || value === "left" || value === "authority" || value === "timeout";
+}
+
+function isSecret(value: unknown): value is string {
+  return typeof value === "string" && JOIN_SECRET.test(value);
+}
+
+function isSession(value: unknown): value is string {
+  return typeof value === "string" && SESSION_ID.test(value);
 }
 
 function isPilot(value: unknown): value is string {
