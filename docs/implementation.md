@@ -12,8 +12,11 @@ The messages, the draw pose, the integrators for bullets and missiles, the optio
 ## When the code is fetched
 
 The flight page dynamically imports `createMultiplayerFeature` when its
-Multiplayer tab opens. Neither this package nor anti-cheat is on the flight
-startup graph. Opening the tab loads code without opening a socket; **Host
+Multiplayer tab opens. Offline weapons fly on the transport-free world
+(`geodetic`, `ballistics`, `guidance`, `posePlayout`, `protocol`,
+`sessionWorld`, `sharedSettings`), so it loads with the flight. No session,
+transport or anti-cheat is on the flight startup graph; `fly`'s
+`multiplayerStartup` test holds both. Opening the tab loads code without opening a socket; **Host
 flight** and **Join flight** are the session opt-in. Anti-cheat is not loaded.
 
 `createMultiplayerAvailability` remains a separately tested availability helper
